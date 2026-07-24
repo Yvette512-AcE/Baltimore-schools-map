@@ -1,0 +1,145 @@
+---
+title: "10M+10H"
+author: "Yvette Yan"
+date: "2026-07-18"
+output: html_document
+---
+
+library(sf)
+library(leaflet)
+library(dplyr)
+library(htmlwidgets)
+library(htmltools)
+
+schools_df <- read.csv("All_schools.csv", check.names = FALSE)
+schools_sf <- st_as_sf(schools_df, coords = c("lon", "lat"), crs = 4326, remove = FALSE)
+
+west_schools <- schools_sf %>%
+  filter(lon < -76.62) %>% 
+  st_transform(crs = 2248)
+
+ms_sf <- west_schools %>% filter(School_Type == "Middle")
+hs_sf <- west_schools %>% filter(School_Type == "High")
+
+dist_mat <- st_distance(ms_sf, hs_sf)
+pairs_list <- list()
+
+
+n_pairs <- min(nrow(ms_sf), nrow(hs_sf)) 
+for(i in 1:n_pairs) {
+  min_idx <- arrayInd(which.min(dist_mat), dim(dist_mat))
+  r <- min_idx[1]
+  c <- min_idx[2]
+  
+  pairs_list[[i]] <- tibble(
+    ms_index = r,
+    hs_index = c,
+    Combined_Score = coalesce(ms_sf$Total_Sc[r], 0) + coalesce(hs_sf$Total_Sc[c], 0)
+  )
+  
+
+  dist_mat[r, ] <- NA
+  dist_mat[, c] <- NA
+}
+
+pairs_df <- bind_rows(pairs_list)
+
+top_10_pairs <- pairs_df %>%
+  arrange(desc(Combined_Score)) %>%
+  slice_head(n = 10)
+
+top_10_ms <- ms_sf[top_10_pairs$ms_index, ]
+top_10_hs <- hs_sf[top_10_pairs$hs_index, ]
+
+target_schools <- bind_rows(top_10_ms, top_10_hs) %>%
+  st_transform(crs = 4326)
+
+create_line <- function(p1, p2) {
+  coords_matrix <- rbind(st_coordinates(p1), st_coordinates(p2))
+  st_linestring(coords_matrix)
+}
+
+lines_sfc <- st_sfc(mapply(create_line, st_geometry(top_10_ms), st_geometry(top_10_hs), SIMPLIFY = FALSE), crs = 2248)
+
+feeder_lines_sf <- st_sf(
+  ms_name = top_10_ms$School_Name,
+  hs_name = top_10_hs$School_Name,
+  geometry = lines_sfc
+) %>%
+  st_transform(crs = 4326) 
+
+
+csa_boundaries <- st_read("Baltimore_CSA.geojson") %>%
+  st_transform(crs = 4326)
+
+csa_boundaries$school_count <- lengths(st_intersects(csa_boundaries, target_schools))
+
+csa_boundaries <- csa_boundaries %>%
+  mutate(
+    fill_col = case_when(
+      school_count >= 3 ~ "#08519c",  
+      school_count == 2 ~ "#3182bd",  
+      school_count == 1 ~ "#9ecae1",  
+      TRUE ~ "transparent"            
+    ),
+    fill_opac = ifelse(school_count == 0, 0, 0.6) 
+  )
+
+pal <- colorFactor(
+  palette = c("#d93f3c", "#2e7d32"), 
+  domain = c("High", "Middle")
+)
+
+interactive_map <- leaflet() %>%
+  
+  addProviderTiles(providers$CartoDB.Positron) %>%
+
+  addPolygons(data = csa_boundaries,
+              fillColor = ~fill_col,        
+              fillOpacity = ~fill_opac,     
+              color = "#4a6fa5",            
+              weight = 2,                 
+              dashArray = "5, 5",         
+              highlightOptions = highlightOptions(
+                weight = 3,
+                color = "#2c3e50",        
+                fillColor = "#ffeb9b",      
+                fillOpacity = 0.7,
+                bringToFront = FALSE 
+              ),
+              label = ~CSA2020, 
+              labelOptions = labelOptions(
+                style = list("font-weight" = "normal", padding = "3px 8px"),
+                textsize = "13px",
+                direction = "auto"
+              )
+  ) %>%
+  
+
+  addPolylines(data = feeder_lines_sf,
+               color = "gray",           
+               weight = 3,               
+               opacity = 0.4,            
+               dashArray = "6, 6",       
+               
+               highlightOptions = highlightOptions(
+                 color = "#ff7f00",      
+                 weight = 6,             
+                 opacity = 1,            
+                 bringToFront = TRUE     
+               ),
+               label = ~paste(ms_name, "➡", hs_name) 
+  ) %>%
+  
+  addCircleMarkers(data = target_schools,
+                   color = ~pal(School_Type),
+                   fillColor = ~pal(School_Type),
+                   fillOpacity = 0.9,
+                   radius = 6,               
+                   weight = 1,
+                   
+  )
+
+print(interactive_map)
+
+saveWidget(interactive_map, "Map4_West_Baltimore_Feeder_Pairs.html")
