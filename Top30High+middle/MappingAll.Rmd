@@ -1,0 +1,113 @@
+---
+title: "School Mapping"
+author: "Yvette Yan"
+date: "2026-07-08"
+output: html_document
+---
+
+library(sf)
+library(leaflet)
+library(dplyr)
+library(htmlwidgets)
+library(htmltools)
+
+schools_df <- read.csv("All_schools.csv", check.names = FALSE)
+schools_sf <- st_as_sf(schools_df, coords = c("lon", "lat"), crs = 4326)
+
+csa_boundaries <- st_read("Baltimore_CSA.geojson")
+csa_boundaries <- st_transform(csa_boundaries, crs = 4326)
+
+csa_boundaries$school_count <- lengths(st_intersects(csa_boundaries, schools_sf))
+
+csa_boundaries <- csa_boundaries %>%
+  mutate(
+    fill_col = case_when(
+      school_count >= 3 ~ "#08519c",  
+      school_count == 2 ~ "#3182bd",  
+      school_count == 1 ~ "#9ecae1",  
+      TRUE ~ "transparent"            
+    ),
+    fill_opac = ifelse(school_count == 0, 0, 0.6) 
+  )
+
+pal <- colorFactor(
+  palette = c("#d93f3c", "#2e7d32"), 
+  domain = schools_sf$School_Type
+)
+
+
+interactive_map <- leaflet() %>%
+  
+  addProviderTiles(providers$CartoDB.Positron) %>%
+
+
+  addPolygons(data = csa_boundaries,
+              fillColor = ~fill_col,        
+              fillOpacity = ~fill_opac,     
+              color = "#4a6fa5",            
+              weight = 2,                 
+              dashArray = "5, 5",         
+              
+              highlightOptions = highlightOptions(
+                weight = 3,
+                color = "#2c3e50",        
+                fillColor = "#ffeb9b",      
+                fillOpacity = 0.7,
+                bringToFront = FALSE 
+              ),
+              
+              label = ~CSA2020, 
+              labelOptions = labelOptions(
+                style = list("font-weight" = "normal", padding = "3px 8px"),
+                textsize = "13px",
+                direction = "auto"
+              )) %>%
+
+
+  addCircleMarkers(data = schools_sf,
+                   color = ~pal(School_Type),
+                   fillColor = ~pal(School_Type),
+                   fillOpacity = 0.8,
+                   radius = 4,                
+                   weight = 1,
+                   clusterOptions = markerClusterOptions(), 
+                   
+                   label = ~lapply(paste0(
+                     "<b>", School_Name, 
+                     "<br/>Principal Name:", Principal_Name,
+                     "<br/>Email:", Principal_Email,
+                     "<br/>Recreation Center Nearby:", Recreation_Center,
+                     "<br/>Phone:", Contact,
+                     "<br/>Council member:", Council_member,
+                     "<br/>Phone:", Concilmember_Phone,
+                     "<br/>Email:", Concilmember_Email
+                     ), HTML),
+                   
+                   labelOptions = labelOptions(
+                     style = list("color" = "#333333", padding = "4px 8px"),
+                     textsize = "14px",
+                     direction = "top"
+                   )
+  ) %>%
+  
+
+  addLegend(
+    position = "bottomright",
+    colors = c("#d93f3c", "#2e7d32"),
+    labels = c("High School", "Middle School"),
+    title = "School Type",
+    opacity = 0.8
+  ) %>%
+  
+
+  addLegend(
+    position = "bottomright", 
+    colors = c("#08519c", "#3182bd", "#9ecae1"),
+    labels = c("≥ 3 Target Schools", "2 Target Schools", "1 Target School"),
+    title = "Number of Target Schools",
+    opacity = 0.6
+  )
+
+print(interactive_map)
+
+saveWidget(interactive_map, "Baltimore_Target_All30_Interactive.html")
